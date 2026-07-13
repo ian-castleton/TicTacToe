@@ -9,7 +9,7 @@ class TicTacToeNet(nn.Module):
         super().__init__()
         self.model = nn.Sequential(
             nn.Linear(9, 4),          # Connects all 9 Inputs to all 4 Hidden nodes
-            nn.ReLU(),                # Filters the otput of those 4 Hidden nodes
+            nn.ReLU(),                                    # Filters the output of those 4 Hidden nodes
             nn.Linear(4,9)            # Connects those 4 Hidden nodes to all 9 Outputs
         )
 
@@ -66,12 +66,13 @@ for episode in range(1, episodes + 1):
         state_tensor = torch.FloatTensor(board) * turn
 
         # Epsilon-Greedy action selection
+        # Decide whether to make a random move or pick the current known best move
         if random.random() < epsilon:
             action = random.choice(valid_moves)
         else:
             with torch.no_grad():
                 q_values = model(state_tensor)
-            # Mask ivalid moves by giving them a very low score
+            # Mask invalid moves by giving them a very low score
             for i in range(9):
                 if i not in valid_moves:
                     q_values[i] = -999.0
@@ -123,6 +124,7 @@ for episode in range(1, episodes + 1):
             reward = -1.0  # Lost
 
         # Target Q-Value calculation (Bellman Equation)
+        # How to reward a move made early in the game that directly leads to a victory five turns later.
         target = reward
 
         # Update network weights

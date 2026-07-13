@@ -83,6 +83,7 @@ def train_reinforcement_learning(episodes=20000):
     # Instantiate network, loss, and optimizer
     model = TicTacNet(hidden_size=32)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
+    # optimizer = optim.SGD(model.parameters(), lr = 0.01, momentum=0.9)
     criterion = nn.MSELoss()
 
     env = TicTacToeEnv()

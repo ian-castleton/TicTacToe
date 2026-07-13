@@ -7,7 +7,7 @@ class TicTacToeNet(nn.Module):
         super().__init__()
         self.model = nn.Sequential(
             nn.Linear(9, 4),          # Connects all 9 Inputs to all 4 Hidden nodes
-            nn.ReLU(),                # Filters the otput of those 4 Hidden nodes
+            nn.ReLU(),                # Filters the output of those 4 Hidden nodes
             nn.Linear(4,9)            # Connects those 4 Hidden nodes to all 9 Outputs
         )
 
