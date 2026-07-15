@@ -36,7 +36,8 @@ model = TicTacToeNet()
 # model.parameter() tells Adam which weights and biases it is allowed to modify
 # lr = learning rate
 optimizer = optim.Adam(model.parameters(), lr=0.01)  # Adaptive Moment Estimation
-loss_fn = nn.MSELoss()
+#loss_fn = nn.MSELoss(reduction='sum')
+loss_fn = nn.MSELoss(reduction='sum')
 
 # Hyperparameters
 episodes = 20000
@@ -101,6 +102,7 @@ for episode in range(1, episodes + 1):
         p1_pct = (p1_wins / window_size) * 100
         p2_pct = (p2_wins / window_size) * 100
         tie_pct = (ties / window_size) * 100
+        epsilon = epsilon *0.7;   # Reduce exploration as the training progresses
 
         print(f"Games {episode - window_size + 1:5d} to {episode:5d} | "
               f"P1 Wins: {p1_pct:4.1f}% | "
@@ -112,6 +114,7 @@ for episode in range(1, episodes + 1):
 
     # Update the network backward through the game history
     # Backpropagation training loop
+    discount  = 1.0
     for entry in reversed(history):
         p_turn = entry['turn']
 
@@ -125,7 +128,8 @@ for episode in range(1, episodes + 1):
 
         # Target Q-Value calculation (Bellman Equation)
         # How to reward a move made early in the game that directly leads to a victory five turns later.
-        target = reward
+        target = reward * discount
+        discount *= gamma
 
         # Update network weights
         current_q = model(entry['state'])
@@ -133,6 +137,7 @@ for episode in range(1, episodes + 1):
         target_q[entry['action']] = target
 
         loss = loss_fn(current_q, target_q)
+        #loss = loss_fn(current_q[entry['action']], target_q[entry['action']])
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
