@@ -57,10 +57,6 @@ class TicTacToeEnv:
         return None  # Game ongoing
 
     def step(self, action):
-        # Invalid move punishment
-        if self.board[action] != 0:
-            return self.get_state(), -10, True, "invalid"
-
         self.board[action] = self.current_player
         winner = self.check_winner()
 
@@ -76,12 +72,55 @@ class TicTacToeEnv:
         return self.get_state(), 0.0, False, "ongoing"
 
 
+def evaluate_against_random(model, games=500, agent_plays="X"):
+    wins, losses, draws = 0, 0, 0
+    agent_side = 1 if agent_plays == "X" else -1
+
+    for _ in range(games):
+        env = TicTacToeEnv()
+        state = env.reset()
+        done = False
+        while not done:
+            legal = env.get_legal_moves()
+            if env.current_player == agent_side:
+                state_t = torch.FloatTensor(state)
+                with torch.no_grad():
+                    q = model(state_t).clone()
+                for i in range(9):
+                    if i not in legal:
+                        q[i] = float('-inf')
+                action = torch.argmax(q).item()
+            else:
+                action = random.choice(legal)
+            state, reward, done, status = env.step(action)
+
+        winner = env.check_winner()
+        if winner == agent_side:
+            wins += 1
+        elif winner == -agent_side:
+            losses += 1
+        else:
+            draws += 1
+    return wins, losses, draws
+
+
+
+
+
+
+
+
+
 # -------------------------------------------------------------
 # 3. SELF-PLAY TRAINING ALGORITHM
 # -------------------------------------------------------------
 def train_reinforcement_learning(episodes=20000):
     # Instantiate network, loss, and optimizer
     model = TicTacNet(hidden_size=32)
+
+    target_model = TicTacNet(hidden_size=32)
+    target_model.load_state_dict(model.state_dict())
+
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     # optimizer = optim.SGD(model.parameters(), lr = 0.01, momentum=0.9)
     criterion = nn.MSELoss()
@@ -89,6 +128,11 @@ def train_reinforcement_learning(episodes=20000):
     env = TicTacToeEnv()
     epsilon = 0.4  # Exploration rate
     decay = 0.9999
+
+    window_size = 5000
+    window_stats = {"win_x": 0, "win_o": 0, "draw": 0}
+    window_losses = []
+
 
     print(f"Training network via self-play for {episodes} episodes...")
 
@@ -101,16 +145,24 @@ def train_reinforcement_learning(episodes=20000):
 
         while not done:
             state_t = torch.FloatTensor(state)
+            legal_moves = env.get_legal_moves()
 
             # Epsilon-greedy action selection
             if random.random() < epsilon:
-                action = random.choice(range(9))
+                action = random.choice(legal_moves)
             else:
                 with torch.no_grad():
                     q_values = model(state_t)
-                    action = torch.argmax(q_values).item()
+                    # Mask illegal moves to -inf so argmax never selects them
+                    masked_q = q_values.clone()
+                    for i in range(9):
+                        if i not in legal_moves:
+                            masked_q[i] = float('-inf')
+                    action = torch.argmax(masked_q).item()
 
             next_state, reward, done, status = env.step(action)
+            if done:
+                final_status = status
 
             # Record historical step data
             game_history.append((state_t, action, reward))
@@ -124,27 +176,72 @@ def train_reinforcement_learning(episodes=20000):
                 state = next_state
 
         # Batch gradient update at the end of the game
-        for i, (s_t, act, r) in enumerate(game_history):
+        #for i, (s_t, act, r) in enumerate(game_history):
+        for i, (s_t, act, r) in reversed(list(enumerate(game_history))):
             target = r
             # If the move wasn't terminal, add discounted future predicted reward
-            if r != -10 and i < len(game_history) - 2:
+            if i + 2 < len(game_history):
+                # Normal case: bootstrap from your own next turn
                 next_s_t = game_history[i + 2][0]  # Look ahead to your next turn's state
                 with torch.no_grad():
-                    target += 0.9 * torch.max(model(next_s_t)).item()
+                    next_q_live = model(next_s_t).clone()
+                    next_legal = [j for j in range(9) if next_s_t[j].item() == 0]
+                    for j in range(9):
+                        if j not in next_legal:
+                            next_q_live[j] = float('-inf')
+                    best_action = torch.argmax(next_q_live).item()
+
+                    next_q_target = target_model(next_s_t)
+                    target += 0.9 * next_q_target[best_action].item()
+            elif i + 1 < len(game_history) and status == "draw":
+                # Second-to-last move in a draw: the very next event is the
+                # game ending in a draw, so bootstrapping off that actual outcome
+                # rather than a hypothetical future turn
+                target += 0.9 * game_history[i+1][2]
 
             current_q = model(s_t)[act]
             loss = criterion(current_q, torch.tensor(target, dtype=torch.float32))
+            window_losses.append(loss.item())
 
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+
+
+        winner = env.check_winner()
+        if winner == 1:
+            window_stats["win_x"] += 1
+        elif winner == -1:
+            window_stats["win_o"] += 1
+        else:
+            window_stats["draw"] += 1
 
         epsilon = max(0.05, epsilon * decay)
 
-        if (episode + 1) % 5000 == 0:
-            print(f"Episode {episode + 1}/{episodes} complete. Exploration (Epsilon): {epsilon:.3f}")
+        if (episode + 1) % 500 == 0:
+            target_model.load_state_dict(model.state_dict())
+
+        if (episode + 1) % window_size == 0:
+            total = sum(window_stats.values())
+            avg_loss = sum(window_losses) / len(window_losses) if window_losses else 0.0
+
+            print(f"Episode {episode + 1}/{episodes} | Epsilon: {epsilon:.3f} | Avg Loss: {avg_loss:.4f}")
+            print(f"  Last {total} games — X wins: {window_stats['win_x'] / total * 100:.1f}% | "
+                  f"O wins: {window_stats['win_o'] / total * 100:.1f}% | "
+                  f"Draws: {window_stats['draw'] / total * 100:.1f}%")
+
+            window_stats = {"win_x": 0, "win_o": 0, "draw": 0}
+            window_losses = []
 
     print("Training finished!\n")
+
+    w, l, d = evaluate_against_random(model, agent_plays="X")
+    print(f"Agent as X vs random: Win {w / 5:.1f}% | Loss {l / 5:.1f}% | Draw {d / 5:.1f}%")
+
+    w, l, d = evaluate_against_random(model, agent_plays="O")
+    print(f"Agent as O vs random: Win {w / 5:.1f}% | Loss {l / 5:.1f}% | Draw {d / 5:.1f}%")
+
 
     # Save the mmodel's weights and architecture state
     model_path = "large_model.pth"
