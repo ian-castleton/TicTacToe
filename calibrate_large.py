@@ -4,6 +4,12 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 
+from collections import deque
+import random as rnd
+
+replay_buffer = deque(maxlen=10000)
+batch_size = 64
+
 
 # -------------------------------------------------------------
 # 1. NEURAL NETWORK ARCHITECTURE
@@ -104,111 +110,108 @@ def evaluate_against_random(model, games=500, agent_plays="X"):
     return wins, losses, draws
 
 
-
-
-
-
-
-
-
 # -------------------------------------------------------------
 # 3. SELF-PLAY TRAINING ALGORITHM
 # -------------------------------------------------------------
 def train_reinforcement_learning(episodes=20000):
-    # Instantiate network, loss, and optimizer
     model = TicTacNet(hidden_size=32)
 
     target_model = TicTacNet(hidden_size=32)
     target_model.load_state_dict(model.state_dict())
 
-    optimizer = optim.Adam(model.parameters(), lr=0.005)
-    # optimizer = optim.SGD(model.parameters(), lr = 0.01, momentum=0.9)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)  # lowered from 0.005
     criterion = nn.MSELoss()
 
     env = TicTacToeEnv()
-    epsilon = 0.4  # Exploration rate
+    epsilon = 0.4
     decay = 0.9999
+    gamma = 0.9
 
     window_size = 5000
     window_stats = {"win_x": 0, "win_o": 0, "draw": 0}
     window_losses = []
-
 
     print(f"Training network via self-play for {episodes} episodes...")
 
     for episode in range(episodes):
         state = env.reset()
         done = False
-
-        # Track history within the current game to retroactively apply rewards
         game_history = []
 
+        # ---- 1. PLAY A GAME (unchanged from your version) ----
         while not done:
             state_t = torch.FloatTensor(state)
             legal_moves = env.get_legal_moves()
 
-            # Epsilon-greedy action selection
             if random.random() < epsilon:
                 action = random.choice(legal_moves)
             else:
                 with torch.no_grad():
-                    q_values = model(state_t)
-                    # Mask illegal moves to -inf so argmax never selects them
-                    masked_q = q_values.clone()
+                    q_values = model(state_t).clone()
                     for i in range(9):
                         if i not in legal_moves:
-                            masked_q[i] = float('-inf')
-                    action = torch.argmax(masked_q).item()
+                            q_values[i] = float('-inf')
+                    action = torch.argmax(q_values).item()
 
             next_state, reward, done, status = env.step(action)
-            if done:
-                final_status = status
-
-            # Record historical step data
             game_history.append((state_t, action, reward))
 
             if done:
-                # If game ended in a win, the opponent lost. Retroactively penalize opponent's last move.
                 if status == "win" and len(game_history) > 1:
                     prev_state, prev_action, prev_reward = game_history[-2]
                     game_history[-2] = (prev_state, prev_action, -1.0)
             else:
                 state = next_state
 
-        # Batch gradient update at the end of the game
-        #for i, (s_t, act, r) in enumerate(game_history):
-        for i, (s_t, act, r) in reversed(list(enumerate(game_history))):
-            target = r
-            # If the move wasn't terminal, add discounted future predicted reward
-            if i + 2 < len(game_history):
-                # Normal case: bootstrap from your own next turn
-                next_s_t = game_history[i + 2][0]  # Look ahead to your next turn's state
-                with torch.no_grad():
-                    next_q_live = model(next_s_t).clone()
-                    next_legal = [j for j in range(9) if next_s_t[j].item() == 0]
-                    for j in range(9):
-                        if j not in next_legal:
-                            next_q_live[j] = float('-inf')
-                    best_action = torch.argmax(next_q_live).item()
+        # ---- 2. PUSH TRANSITIONS INTO THE REPLAY BUFFER ----
+        # (No training happens here — just recording what happened,
+        # same idea as game_history before, but stored persistently
+        # across many episodes instead of thrown away after one.)
+        n = len(game_history)
+        for i, (s_t, act, r) in enumerate(game_history):
+            if i < n - 2:
+                # Normal case: bootstrap later from your own next turn
+                next_s_t = game_history[i + 2][0]
+                replay_buffer.append((s_t, act, r, next_s_t, False))
+            elif i == n - 2 and status == "draw":
+                # Second-to-last move in a draw: outcome is fully known
+                # already (0.9 * 0.5), so store it as a fixed terminal target
+                fixed_target = r + gamma * game_history[i + 1][2]
+                replay_buffer.append((s_t, act, fixed_target, None, True))
+            else:
+                # Final move of the game (any outcome), or the
+                # second-to-last move of a win/loss (already fixed to -1.0/1.0)
+                replay_buffer.append((s_t, act, r, None, True))
 
-                    next_q_target = target_model(next_s_t)
-                    target += 0.9 * next_q_target[best_action].item()
-            elif i + 1 < len(game_history) and status == "draw":
-                # Second-to-last move in a draw: the very next event is the
-                # game ending in a draw, so bootstrapping off that actual outcome
-                # rather than a hypothetical future turn
-                target += 0.9 * game_history[i+1][2]
+        # ---- 3. TRAIN ON A RANDOM MINI-BATCH FROM THE BUFFER ----
+        if len(replay_buffer) >= batch_size:
+            batch = rnd.sample(replay_buffer, batch_size)
+            for s_t, act, r, next_s_t, is_terminal in batch:
+                target = r
+                if not is_terminal:
+                    with torch.no_grad():
+                        next_legal = [j for j in range(9) if next_s_t[j].item() == 0]
 
-            current_q = model(s_t)[act]
-            loss = criterion(current_q, torch.tensor(target, dtype=torch.float32))
-            window_losses.append(loss.item())
+                        # Double DQN: select with live model, evaluate with target model
+                        next_q_live = model(next_s_t).clone()
+                        for j in range(9):
+                            if j not in next_legal:
+                                next_q_live[j] = float('-inf')
+                        best_action = torch.argmax(next_q_live).item()
 
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+                        next_q_target = target_model(next_s_t)
+                        target += gamma * next_q_target[best_action].item()
 
+                current_q = model(s_t)[act]
+                loss = criterion(current_q, torch.tensor(target, dtype=torch.float32))
+                window_losses.append(loss.item())
 
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+        # ---- 4. BOOKKEEPING (unchanged) ----
         winner = env.check_winner()
         if winner == 1:
             window_stats["win_x"] += 1
@@ -231,32 +234,23 @@ def train_reinforcement_learning(episodes=20000):
                   f"O wins: {window_stats['win_o'] / total * 100:.1f}% | "
                   f"Draws: {window_stats['draw'] / total * 100:.1f}%")
 
+            wx, lx, dx = evaluate_against_random(model, games=200, agent_plays="X")
+            wo, lo, do = evaluate_against_random(model, games=200, agent_plays="O")
+            print(f"  Eval — X: Win {wx / 2:.0f}% Draw {dx / 2:.0f}% | O: Win {wo / 2:.0f}% Draw {do / 2:.0f}%")
+
             window_stats = {"win_x": 0, "win_o": 0, "draw": 0}
             window_losses = []
 
     print("Training finished!\n")
-
-    w, l, d = evaluate_against_random(model, agent_plays="X")
-    print(f"Agent as X vs random: Win {w / 5:.1f}% | Loss {l / 5:.1f}% | Draw {d / 5:.1f}%")
-
-    w, l, d = evaluate_against_random(model, agent_plays="O")
-    print(f"Agent as O vs random: Win {w / 5:.1f}% | Loss {l / 5:.1f}% | Draw {d / 5:.1f}%")
-
-
-    # Save the mmodel's weights and architecture state
     model_path = "large_model.pth"
     torch.save(model.state_dict(), model_path)
     print(f"Model successfully saved to {model_path}!")
-
     return model
-
-
-
 
 
 if __name__ == "__main__":
     # Train the agent
-    trained_model = train_reinforcement_learning(episodes=25000)
+    trained_model = train_reinforcement_learning(episodes=40000)
     # Start loop to play against it
     # while True:
     #     play_human_vs_ai(trained_model)
