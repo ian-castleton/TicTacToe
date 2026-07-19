@@ -1,4 +1,6 @@
 import random
+import time
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -133,6 +135,7 @@ def train_reinforcement_learning(episodes=20000):
 
     print(f"Training network via self-play for {episodes} episodes...")
 
+    start = time.time()
     for episode in range(episodes):
         state = env.reset()
         done = False
@@ -238,6 +241,10 @@ def train_reinforcement_learning(episodes=20000):
             wx, lx, dx = evaluate_against_random(model, games=200, agent_plays="X")
             wo, lo, do = evaluate_against_random(model, games=200, agent_plays="O")
             print(f"  Eval — X: Win {wx / 2:.0f}% Draw {dx / 2:.0f}% | O: Win {wo / 2:.0f}% Draw {do / 2:.0f}%")
+
+            end = time.time()
+            print(f"  Time taken: {(end - start):.1f}s")
+            start = end
 
             window_stats = {"win_x": 0, "win_o": 0, "draw": 0}
             window_losses = []
