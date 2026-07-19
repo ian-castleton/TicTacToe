@@ -224,7 +224,7 @@ def train_reinforcement_learning(episodes=20000):
         else:
             window_stats["draw"] += 1
 
-        epsilon = max(0.05, epsilon * decay)
+        epsilon = max(0.02, epsilon * decay)
 
         if (episode + 1) % 500 == 0:
             target_model.load_state_dict(model.state_dict())
