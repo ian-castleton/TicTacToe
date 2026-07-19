@@ -7,7 +7,7 @@ import numpy as np
 from collections import deque
 import random as rnd
 
-replay_buffer = deque(maxlen=10000)
+replay_buffer = deque(maxlen=25000)
 batch_size = 64
 
 
@@ -157,6 +157,7 @@ def train_reinforcement_learning(episodes=20000):
             game_history.append((state_t, action, reward))
 
             if done:
+                # If game ended in a win, the opponent lost. Retroactively penalize opponent's last move.
                 if status == "win" and len(game_history) > 1:
                     prev_state, prev_action, prev_reward = game_history[-2]
                     game_history[-2] = (prev_state, prev_action, -1.0)
@@ -250,7 +251,7 @@ def train_reinforcement_learning(episodes=20000):
 
 if __name__ == "__main__":
     # Train the agent
-    trained_model = train_reinforcement_learning(episodes=40000)
+    trained_model = train_reinforcement_learning(episodes=25000)
     # Start loop to play against it
     # while True:
     #     play_human_vs_ai(trained_model)
